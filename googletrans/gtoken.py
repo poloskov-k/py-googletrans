@@ -38,12 +38,12 @@ class TokenAcquirer:
     RE_TKK = re.compile(r'tkk:\'(.+?)\'', re.DOTALL)
     RE_RAWTKK = re.compile(r'tkk:\'(.+?)\'', re.DOTALL)
 
-    def __init__(self, client: httpx.Client, tkk='0', host='translate.google.com'):
+    def __init__(self, client: httpx.AsyncClient, tkk='0', host='translate.google.com'):
         self.client = client
         self.tkk = tkk
         self.host = host if 'http' in host else 'https://' + host
 
-    def _update(self):
+    async def _update(self):
         """update tkk
         """
         # we don't need to update the base TKK value when it is still valid
@@ -51,7 +51,7 @@ class TokenAcquirer:
         if self.tkk and int(self.tkk.split('.')[0]) == now:
             return
 
-        r = self.client.get(self.host)
+        r = await self.client.get(self.host)
 
         raw_tkk = self.RE_TKK.search(r.text)
         if raw_tkk:
@@ -195,7 +195,7 @@ class TokenAcquirer:
 
         return '{}.{}'.format(a, a ^ b)
 
-    def do(self, text):
-        self._update()
+    async def do(self, text):
+        await self._update()
         tk = self.acquire(text)
         return tk

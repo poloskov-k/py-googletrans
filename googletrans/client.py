@@ -6,20 +6,19 @@ You can translate text using this module.
 """
 import random
 import typing
-import re
 import json
 
 import httpcore
 import httpx
 from httpx import Timeout
 
-from googletrans import urls, utils
+from googletrans import urls
 from googletrans.gtoken import TokenAcquirer
 from googletrans.constants import (
     DEFAULT_CLIENT_SERVICE_URLS,
     DEFAULT_FALLBACK_SERVICE_URLS,
     DEFAULT_USER_AGENT, LANGCODES, LANGUAGES, SPECIAL_CASES,
-    DEFAULT_RAISE_EXCEPTION, DUMMY_DATA
+    DEFAULT_RAISE_EXCEPTION
 )
 from googletrans.models import Translated, Detected, TranslatedPart
 
@@ -64,14 +63,16 @@ class Translator:
                  http2=True,
                  use_fallback=False):
 
-        self.client = httpx.Client(http2=http2)
-        if proxies is not None:  # pragma: nocover
-            self.client.proxies = proxies
 
-        self.client.headers.update({
+        self.headers = {
             'User-Agent': user_agent,
             'Referer': 'https://translate.google.com',
-        })
+        }
+        # self.client = httpx.Client(http2=http2)
+        self.client = httpx.AsyncClient(http2=http2)
+        if proxies is not None:  # pragma: nocover
+            self.client.proxies = proxies
+        self.client.headers.update(self.headers)
 
         if timeout is not None:
             self.client.timeout = timeout
@@ -104,7 +105,7 @@ class Translator:
             return self.service_urls[0]
         return random.choice(self.service_urls)
 
-    def _translate(self, text: str, dest: str, src: str):
+    async def _translate(self, text: str, dest: str, src: str):
         url = urls.TRANSLATE_RPC.format(host=self._pick_service_url())
         data = {
             'f.req': self._build_rpc_request(text, dest, src),
@@ -117,35 +118,14 @@ class Translator:
             'soc-device': 1,
             'rt': 'c',
         }
-        r = self.client.post(url, params=params, data=data)
+        r = await self.client.post(url, params=params, data=data)
 
-        if r.status_code != 200 and self.raise_Exception:
+        if r.status_code != 200:
             raise Exception('Unexpected status code "{}" from {}'.format(
                 r.status_code, self.service_urls))
 
         return r.text, r
 
-    def _translate_legacy(self, text, dest, src, override):
-        token = '' #dummy default value here as it is not used by api client
-        if self.client_type == 'webapp':
-            token = self.token_acquirer.do(text)
-
-        params = utils.build_params(client=self.client_type, query=text, src=src, dest=dest,
-                                    token=token, override=override)
-
-        url = urls.TRANSLATE.format(host=self._pick_service_url())
-        r = self.client.get(url, params=params)
-
-        if r.status_code == 200:
-            data = utils.format_json(r.text)
-            return data, r
-
-        if self.raise_exception:
-            raise Exception('Unexpected status code "{}" from {}'.format(
-                r.status_code, self.service_urls))
-
-        DUMMY_DATA[0][0][0] = text
-        return DUMMY_DATA, r
 
     def _parse_extra_data(self, data):
         response_parts_name_mapping = {
@@ -170,7 +150,7 @@ class Translator:
 
         return extra
 
-    def translate(self, text: str, dest='en', src='auto'):
+    async def translate(self, text: str, dest='en', src='auto'):
         dest = dest.lower().split('_', 1)[0]
         src = src.lower().split('_', 1)[0]
 
@@ -191,7 +171,7 @@ class Translator:
                 raise ValueError('invalid destination language')
 
         origin = text
-        data, response = self._translate(text, dest, src)
+        data, response = await self._translate(text, dest, src)
 
         token_found = False
         square_bracket_counts = [0, 0]
@@ -262,167 +242,8 @@ class Translator:
         return result
 
 
-    def translate_legacy(self, text, dest='en', src='auto', **kwargs):
-        """Translate text from source language to destination language
 
-        :param text: The source text(s) to be translated. Batch translation is supported via sequence input.
-        :type text: UTF-8 :class:`str`; :class:`unicode`; string sequence (list, tuple, iterator, generator)
-
-        :param dest: The language to translate the source text into.
-                     The value should be one of the language codes listed in :const:`googletrans.LANGUAGES`
-                     or one of the language names listed in :const:`googletrans.LANGCODES`.
-        :param dest: :class:`str`; :class:`unicode`
-
-        :param src: The language of the source text.
-                    The value should be one of the language codes listed in :const:`googletrans.LANGUAGES`
-                    or one of the language names listed in :const:`googletrans.LANGCODES`.
-                    If a language is not specified,
-                    the system will attempt to identify the source language automatically.
-        :param src: :class:`str`; :class:`unicode`
-
-        :rtype: Translated
-        :rtype: :class:`list` (when a list is passed)
-
-        Basic usage:
-            >>> from googletrans import Translator
-            >>> translator = Translator()
-            >>> translator.translate('안녕하세요.')
-            <Translated src=ko dest=en text=Good evening. pronunciation=Good evening.>
-            >>> translator.translate('안녕하세요.', dest='ja')
-            <Translated src=ko dest=ja text=こんにちは。 pronunciation=Kon'nichiwa.>
-            >>> translator.translate('veritas lux mea', src='la')
-            <Translated src=la dest=en text=The truth is my light pronunciation=The truth is my light>
-
-        Advanced usage:
-            >>> translations = translator.translate(['The quick brown fox', 'jumps over', 'the lazy dog'], dest='ko')
-            >>> for translation in translations:
-            ...    print(translation.origin, ' -> ', translation.text)
-            The quick brown fox  ->  빠른 갈색 여우
-            jumps over  ->  이상 점프
-            the lazy dog  ->  게으른 개
-        """
-        dest = dest.lower().split('_', 1)[0]
-        src = src.lower().split('_', 1)[0]
-
-        if src != 'auto' and src not in LANGUAGES:
-            if src in SPECIAL_CASES:
-                src = SPECIAL_CASES[src]
-            elif src in LANGCODES:
-                src = LANGCODES[src]
-            else:
-                raise ValueError('invalid source language')
-
-        if dest not in LANGUAGES:
-            if dest in SPECIAL_CASES:
-                dest = SPECIAL_CASES[dest]
-            elif dest in LANGCODES:
-                dest = LANGCODES[dest]
-            else:
-                raise ValueError('invalid destination language')
-
-        if isinstance(text, list):
-            result = []
-            for item in text:
-                translated = self.translate_legacy(item, dest=dest, src=src, **kwargs)
-                result.append(translated)
-            return result
-
-        origin = text
-        data, response = self.translate_legacy(text, dest, src)
-
-        # this code will be updated when the format is changed.
-        translated = ''.join([d[0] if d[0] else '' for d in data[0]])
-
-        extra_data = self._parse_extra_data(data)
-
-        # actual source language that will be recognized by Google Translator when the
-        # src passed is equal to auto.
-        try:
-            src = data[2]
-        except Exception:  # pragma: nocover
-            pass
-
-        pron = origin
-        try:
-            pron = data[0][1][-2]
-        except Exception:  # pragma: nocover
-            pass
-
-        if pron is None:
-            try:
-                pron = data[0][1][2]
-            except:  # pragma: nocover
-                pass
-
-        if dest in EXCLUDES and pron == origin:
-            pron = translated
-
-        # put final values into a new Translated object
-        result = Translated(src=src, dest=dest, origin=origin,
-                            text=translated, pronunciation=pron,
-                            extra_data=extra_data,
-                            response=response)
-
-        return result
-
-    def detect(self, text: str):
-        translated = self.translate(text, src='auto', dest='en')
+    async def detect(self, text: str):
+        translated = await self.translate(text, src='auto', dest='en')
         result = Detected(lang=translated.src, confidence=translated.extra_data.get('confidence', None), response=translated._response)
-        return result
-
-    def detect_legacy(self, text, **kwargs):
-        """Detect language of the input text
-
-        :param text: The source text(s) whose language you want to identify.
-                     Batch detection is supported via sequence input.
-        :type text: UTF-8 :class:`str`; :class:`unicode`; string sequence (list, tuple, iterator, generator)
-
-        :rtype: Detected
-        :rtype: :class:`list` (when a list is passed)
-
-        Basic usage:
-            >>> from googletrans import Translator
-            >>> translator = Translator()
-            >>> translator.detect('이 문장은 한글로 쓰여졌습니다.')
-            <Detected lang=ko confidence=0.27041003>
-            >>> translator.detect('この文章は日本語で書かれました。')
-            <Detected lang=ja confidence=0.64889508>
-            >>> translator.detect('This sentence is written in English.')
-            <Detected lang=en confidence=0.22348526>
-            >>> translator.detect('Tiu frazo estas skribita en Esperanto.')
-            <Detected lang=eo confidence=0.10538048>
-
-        Advanced usage:
-            >>> langs = translator.detect(['한국어', '日本語', 'English', 'le français'])
-            >>> for lang in langs:
-            ...    print(lang.lang, lang.confidence)
-            ko 1
-            ja 0.92929292
-            en 0.96954316
-            fr 0.043500196
-        """
-        if isinstance(text, list):
-            result = []
-            for item in text:
-                lang = self.detect(item)
-                result.append(lang)
-            return result
-
-        data, response = self._translate_legacy(text, 'en', 'auto', kwargs)
-
-        # actual source language that will be recognized by Google Translator when the
-        # src passed is equal to auto.
-        src = ''
-        confidence = 0.0
-        try:
-            if len(data[8][0]) > 1:
-                src = data[8][0]
-                confidence = data[8][-2]
-            else:
-                src = ''.join(data[8][0])
-                confidence = data[8][-2][0]
-        except Exception:  # pragma: nocover
-            pass
-        result = Detected(lang=src, confidence=confidence, response=response)
-
         return result

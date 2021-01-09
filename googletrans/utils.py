@@ -2,7 +2,6 @@
 import json
 import re
 
-
 def build_params(client, query, src, dest, token, override):
     params = {
         'client': client,
